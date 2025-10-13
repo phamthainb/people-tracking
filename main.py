@@ -17,7 +17,7 @@ class PeopleTrackAI(QMainWindow):
         super().__init__()
 
         # --- Window setup ---
-        self.setWindowTitle("PeopleTrackAI - YOLOv8 + DeepSORT")
+        self.setWindowTitle("People Tracking - Team 2")
         self.setGeometry(100, 100, 1024, 800)
         self.setMinimumSize(800, 600)
 
