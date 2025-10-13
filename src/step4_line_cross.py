@@ -11,7 +11,7 @@ VIDEO_PATH = os.path.join(BASE_DIR, "videos", "sample.mp4")
 model = YOLO("yolov8n.pt")
 model.fuse()  # tăng tốc inference
 model.to("cuda" if cv2.cuda.getCudaEnabledDeviceCount() > 0 else "cpu")  # sử dụng GPU nếu có
-# model.to("mps")  # sử dụng GPU nếu có
+# model.to("mps")  # sử dụng GPU cho mac chip m1/m2 (nếu có)
 
 # Khởi tạo DeepSORT
 tracker = DeepSort(
@@ -37,6 +37,22 @@ cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 # === Line setup (dùng 2 điểm) ===
 line_point1 = (719, 258)  # điểm đầu
 line_point2 = (652, 429)  # điểm cuối
+
+# === Vector định hướng IN/OUT ===
+vector_start = (600, 300)  # điểm bắt đầu vector hướng
+vector_end = (750, 350)    # điểm kết thúc vector hướng
+# Quy tắc: 
+# - Hướng từ vector_start -> vector_end = IN 
+# - Hướng từ vector_end -> vector_start = OUT
+
+# Tính vector hướng và vector pháp tuyến
+direction_vector = (vector_end[0] - vector_start[0], vector_end[1] - vector_start[1])
+direction_length = (direction_vector[0]**2 + direction_vector[1]**2)**0.5
+direction_unit = (direction_vector[0] / direction_length, direction_vector[1] / direction_length)
+
+print(f"Direction vector (IN): {direction_vector}")
+print(f"Direction unit vector: ({direction_unit[0]:.3f}, {direction_unit[1]:.3f})")
+
 offset = 15  # ngưỡng cho phép lệch
 in_tracks = set()  # lưu track ID của những người đã in
 out_tracks = set()  # lưu track ID của những người đã out
@@ -63,6 +79,32 @@ def point_side(point, line_params):
     x, y = point
     a, b, c = line_params
     return a * x + b * y + c
+
+# Xác định hướng di chuyển dựa trên vector hướng
+def get_movement_direction(prev_point, current_point, direction_unit_vector):
+    """
+    Tính hướng di chuyển dựa trên vector unit hướng
+    Trả về: 
+    - 1 nếu di chuyển theo hướng IN (cùng chiều với vector)
+    - -1 nếu di chuyển theo hướng OUT (ngược chiều với vector)
+    - 0 nếu không có di chuyển rõ ràng
+    """
+    # Vector di chuyển của object
+    movement_vector = (current_point[0] - prev_point[0], current_point[1] - prev_point[1])
+    
+    # Tính tích vô hướng (dot product) để xác định hướng
+    dot_product = (movement_vector[0] * direction_unit_vector[0] + 
+                   movement_vector[1] * direction_unit_vector[1])
+    
+    # Ngưỡng để xác định hướng rõ ràng
+    threshold = 0.3
+    
+    if dot_product > threshold:
+        return 1  # IN direction
+    elif dot_product < -threshold:
+        return -1  # OUT direction
+    else:
+        return 0  # Không rõ hướng
 
 line_params = calculate_line_params(line_point1, line_point2)
 
@@ -194,27 +236,50 @@ while True:
         current_distance = point_to_line_distance((cx, cy), line_params)
         prev_distance = point_to_line_distance((prev_x, prev_y), line_params)
         
-        # Xác định phía của điểm (dương/âm)
+        # Xác định phía của điểm (dương/âm) so với đường line
         current_side = point_side((cx, cy), line_params)
         prev_side = point_side((prev_x, prev_y), line_params)
         
+        # Xác định hướng di chuyển dựa trên vector hướng
+        movement_dir = get_movement_direction((prev_x, prev_y), (cx, cy), direction_unit)
+        movement_text = ""
+        if movement_dir == 1:
+            movement_text = "→IN"
+        elif movement_dir == -1:
+            movement_text = "→OUT"
+        else:
+            movement_text = "→?"
+        
         # Debug thông tin để kiểm tra
         if track_id == 1:  # chỉ debug track ID 1
-            print(f"Track {track_id}: prev=({prev_x},{prev_y}) cur=({cx},{cy}) dir={direction}")
+            print(f"Track {track_id}: prev=({prev_x},{prev_y}) cur=({cx},{cy}) dir={direction} {movement_text}")
             print(f"  prev_side={prev_side:.1f}, cur_side={current_side:.1f}, dist={current_distance:.1f}")
         
-        # Logic line crossing với khoảng cách đến đường thẳng
+        # Logic line crossing với vector hướng
         # Kiểm tra nếu có chuyển phía và đủ gần đường thẳng
         if abs(current_distance) < offset and abs(prev_distance) < offset:
             # Nếu cả hai điểm đều gần đường thẳng, kiểm tra chuyển phía
-            if (prev_side > 0 and current_side <= 0) and track_id not in out_tracks:
-                # Từ phía dương sang phía âm = OUT
-                out_tracks.add(track_id)
-                print(f"[OUT] Track {track_id}: ({prev_x},{prev_y}) → ({cx},{cy}) [{direction}]")
-            elif (prev_side < 0 and current_side >= 0) and track_id not in in_tracks:
-                # Từ phía âm sang phía dương = IN
-                in_tracks.add(track_id)
-                print(f"[IN] Track {track_id}: ({prev_x},{prev_y}) → ({cx},{cy}) [{direction}]")
+            if (prev_side > 0 and current_side <= 0):
+                # Đã cross qua line, kiểm tra hướng dựa trên vector
+                if movement_dir == 1 and track_id not in in_tracks:
+                    # Di chuyển theo hướng IN vector = IN
+                    in_tracks.add(track_id)
+                    print(f"[IN] Track {track_id}: ({prev_x},{prev_y}) → ({cx},{cy}) [{direction}] {movement_text}")
+                elif movement_dir == -1 and track_id not in out_tracks:
+                    # Di chuyển theo hướng OUT vector = OUT
+                    out_tracks.add(track_id)
+                    print(f"[OUT] Track {track_id}: ({prev_x},{prev_y}) → ({cx},{cy}) [{direction}] {movement_text}")
+                    
+            elif (prev_side < 0 and current_side >= 0):
+                # Đã cross qua line từ phía khác, kiểm tra hướng dựa trên vector
+                if movement_dir == 1 and track_id not in in_tracks:
+                    # Di chuyển theo hướng IN vector = IN
+                    in_tracks.add(track_id)
+                    print(f"[IN] Track {track_id}: ({prev_x},{prev_y}) → ({cx},{cy}) [{direction}] {movement_text}")
+                elif movement_dir == -1 and track_id not in out_tracks:
+                    # Di chuyển theo hướng OUT vector = OUT
+                    out_tracks.add(track_id)
+                    print(f"[OUT] Track {track_id}: ({prev_x},{prev_y}) → ({cx},{cy}) [{direction}] {movement_text}")
 
         # Chọn màu box dựa trên trạng thái
         if track_id in out_tracks:
@@ -292,6 +357,25 @@ while True:
     cv2.putText(frame, f"P2({line_point2[0]},{line_point2[1]})", 
                 (line_point2[0] + 10, line_point2[1] + 20), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+    
+    # Vẽ vector hướng IN/OUT
+    cv2.line(frame, vector_start, vector_end, (255, 0, 255), 4)  # Đường vector màu magenta
+    cv2.circle(frame, vector_start, 6, (0, 255, 255), -1)  # Điểm start màu cyan
+    cv2.circle(frame, vector_end, 6, (255, 0, 255), -1)    # Điểm end màu magenta
+    
+    # Vẽ mũi tên cho vector
+    cv2.arrowedLine(frame, vector_start, vector_end, (255, 0, 255), 4, tipLength=0.3)
+    
+    # Vẽ labels cho vector
+    cv2.putText(frame, f"START({vector_start[0]},{vector_start[1]})", 
+                (vector_start[0] + 10, vector_start[1] - 10), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+    cv2.putText(frame, f"END({vector_end[0]},{vector_end[1]})", 
+                (vector_end[0] + 10, vector_end[1] + 20), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1)
+    cv2.putText(frame, "IN DIRECTION →", 
+                ((vector_start[0] + vector_end[0]) // 2 - 50, (vector_start[1] + vector_end[1]) // 2 - 10), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
     
     # Vẽ text labels cho các vùng
     mid_x = (line_point1[0] + line_point2[0]) // 2
