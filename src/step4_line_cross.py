@@ -9,12 +9,15 @@ VIDEO_PATH = os.path.join(BASE_DIR, "videos", "sample.mp4")
 
 # Khởi tạo YOLO
 model = YOLO("yolov8n.pt")
+model.fuse()  # tăng tốc inference
+model.to("cuda" if cv2.cuda.getCudaEnabledDeviceCount() > 0 else "cpu")  # sử dụng GPU nếu có
+# model.to("mps")  # sử dụng GPU nếu có
 
 # Khởi tạo DeepSORT
 tracker = DeepSort(
-    max_age=30,
-    n_init=3,
-    nn_budget=100,
+    max_age=10,
+    n_init=1,
+    nn_budget=10,
     max_cosine_distance=0.3,
 )
 
@@ -31,12 +34,63 @@ print(f"Video FPS: {fps}, Frame delay: {frame_delay}ms")
 # Tối ưu buffer
 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-# === Line setup (đếm ngang khung hình) ===
-line_y = 350  # toạ độ đường
-offset = 10  # ngưỡng cho phép lệch
+# === Line setup (dùng 2 điểm) ===
+line_point1 = (719, 258)  # điểm đầu
+line_point2 = (652, 429)  # điểm cuối
+offset = 15  # ngưỡng cho phép lệch
 in_tracks = set()  # lưu track ID của những người đã in
 out_tracks = set()  # lưu track ID của những người đã out
 memory = {}  # lưu vị trí trước đó của từng track ID
+
+# Tính toán các tham số đường thẳng ax + by + c = 0
+def calculate_line_params(p1, p2):
+    x1, y1 = p1
+    x2, y2 = p2
+    # Phương trình đường thẳng: (y2-y1)x - (x2-x1)y + (x2-x1)y1 - (y2-y1)x1 = 0
+    a = y2 - y1
+    b = -(x2 - x1)
+    c = (x2 - x1) * y1 - (y2 - y1) * x1
+    return a, b, c
+
+# Tính khoảng cách từ điểm đến đường thẳng
+def point_to_line_distance(point, line_params):
+    x, y = point
+    a, b, c = line_params
+    return abs(a * x + b * y + c) / (a**2 + b**2)**0.5
+
+# Xác định phía của điểm so với đường thẳng
+def point_side(point, line_params):
+    x, y = point
+    a, b, c = line_params
+    return a * x + b * y + c
+
+line_params = calculate_line_params(line_point1, line_point2)
+
+# Hàm vẽ thước đo trục tọa độ
+def draw_rulers(frame):
+    height, width = frame.shape[:2]
+    
+    # Vẽ thước trục X (dưới cùng)
+    ruler_y = height - 30
+    cv2.line(frame, (0, ruler_y), (width, ruler_y), (200, 200, 200), 1)
+    
+    # Vẽ các vạch chia trục X (mỗi 50px)
+    for x in range(0, width, 50):
+        cv2.line(frame, (x, ruler_y - 5), (x, ruler_y + 5), (200, 200, 200), 1)
+        if x % 100 == 0:  # số lớn mỗi 100px
+            cv2.putText(frame, str(x), (x - 10, ruler_y + 20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, (200, 200, 200), 1)
+    
+    # Vẽ thước trục Y (bên trái)
+    ruler_x = 30
+    cv2.line(frame, (ruler_x, 0), (ruler_x, height), (200, 200, 200), 1)
+    
+    # Vẽ các vạch chia trục Y (mỗi 50px)
+    for y in range(0, height, 50):
+        cv2.line(frame, (ruler_x - 5, y), (ruler_x + 5, y), (200, 200, 200), 1)
+        if y % 100 == 0 and y > 0:  # số lớn mỗi 100px
+            cv2.putText(frame, str(y), (5, y + 5), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, (200, 200, 200), 1)
 
 # Thêm FPS counter để monitor performance
 frame_count = 0
@@ -136,20 +190,29 @@ while True:
                 else:
                     direction += "-UP"
 
+        # Tính khoảng cách đến đường thẳng
+        current_distance = point_to_line_distance((cx, cy), line_params)
+        prev_distance = point_to_line_distance((prev_x, prev_y), line_params)
+        
+        # Xác định phía của điểm (dương/âm)
+        current_side = point_side((cx, cy), line_params)
+        prev_side = point_side((prev_x, prev_y), line_params)
+        
         # Debug thông tin để kiểm tra
         if track_id == 1:  # chỉ debug track ID 1
-            print(f"Track {track_id}: prev=({prev_x},{prev_y}), cur=({cx},{cy}), dir={direction}")
-            print(f"  UP_zone: y<{line_y-offset}, DOWN_zone: y>{line_y+offset}")
+            print(f"Track {track_id}: prev=({prev_x},{prev_y}) cur=({cx},{cy}) dir={direction}")
+            print(f"  prev_side={prev_side:.1f}, cur_side={current_side:.1f}, dist={current_distance:.1f}")
         
-        # Logic line crossing với vector 2D
-        if prev_y < line_y - offset and cy >= line_y + offset:
-            # Từ UP ZONE → DOWN ZONE = OUT (đi ra/xuống)
-            if track_id not in out_tracks:
+        # Logic line crossing với khoảng cách đến đường thẳng
+        # Kiểm tra nếu có chuyển phía và đủ gần đường thẳng
+        if abs(current_distance) < offset and abs(prev_distance) < offset:
+            # Nếu cả hai điểm đều gần đường thẳng, kiểm tra chuyển phía
+            if (prev_side > 0 and current_side <= 0) and track_id not in out_tracks:
+                # Từ phía dương sang phía âm = OUT
                 out_tracks.add(track_id)
                 print(f"[OUT] Track {track_id}: ({prev_x},{prev_y}) → ({cx},{cy}) [{direction}]")
-        elif prev_y > line_y + offset and cy <= line_y - offset:
-            # Từ DOWN ZONE → UP ZONE = IN (đi vào/lên)  
-            if track_id not in in_tracks:
+            elif (prev_side < 0 and current_side >= 0) and track_id not in in_tracks:
+                # Từ phía âm sang phía dương = IN
                 in_tracks.add(track_id)
                 print(f"[IN] Track {track_id}: ({prev_x},{prev_y}) → ({cx},{cy}) [{direction}]")
 
@@ -210,21 +273,33 @@ while True:
 
     # Vẽ visualization cho line zones
     frame_width = frame.shape[1]
+    frame_height = frame.shape[0]
     
-    # Vẽ vùng offset (vùng trung tính) - màu xanh nhạt
-    cv2.rectangle(frame, (0, line_y - offset), (frame_width, line_y + offset), (255, 255, 0), -1)  # vàng nhạt
-    cv2.rectangle(frame, (0, line_y - offset), (frame_width, line_y + offset), (255, 255, 0), 1)
+    # Vẽ thước đo trục tọa độ
+    draw_rulers(frame)
     
-    # Vẽ line đếm chính - màu đỏ đậm
-    cv2.line(frame, (0, line_y), (frame_width, line_y), (0, 0, 255), 3)
+    # Vẽ đường thẳng chính (từ 2 điểm)
+    cv2.line(frame, line_point1, line_point2, (0, 0, 255), 3)
+    
+    # Vẽ các điểm đầu cuối của đường thẳng
+    cv2.circle(frame, line_point1, 8, (0, 255, 0), -1)  # điểm đầu màu xanh
+    cv2.circle(frame, line_point2, 8, (255, 0, 0), -1)  # điểm cuối màu đỏ
+    
+    # Vẽ tọa độ của các điểm
+    cv2.putText(frame, f"P1({line_point1[0]},{line_point1[1]})", 
+                (line_point1[0] + 10, line_point1[1] - 10), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    cv2.putText(frame, f"P2({line_point2[0]},{line_point2[1]})", 
+                (line_point2[0] + 10, line_point2[1] + 20), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
     
     # Vẽ text labels cho các vùng
-    cv2.putText(frame, "UP ZONE", (frame_width - 100, line_y - offset - 10), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-    cv2.putText(frame, "DOWN ZONE", (frame_width - 120, line_y + offset + 20), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
-    cv2.putText(frame, f"NEUTRAL ({offset}px)", (frame_width - 150, line_y + 5), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+    mid_x = (line_point1[0] + line_point2[0]) // 2
+    mid_y = (line_point1[1] + line_point2[1]) // 2
+    
+    cv2.putText(frame, f"CROSSING LINE (offset: {offset}px)", 
+                (mid_x - 80, mid_y - 20), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
     text = f"IN: {len(in_tracks)} | OUT: {len(out_tracks)}"
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale = 1.0
