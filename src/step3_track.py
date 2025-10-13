@@ -30,17 +30,24 @@ while True:
 
     # B1: phát hiện người
     results = model(frame)
-    detections = results.xyxy[0].cpu().numpy()
-
+    
     boxes = []
     confidences = []
 
-    for *xyxy, conf, cls in detections:
-        if conf < 0.4:
-            continue
-        x1, y1, x2, y2 = map(int, xyxy)
-        boxes.append([x1, y1, x2 - x1, y2 - y1])
-        confidences.append(conf)
+    # YOLOv8 API - results is a list of Results objects
+    for result in results:
+        if result.boxes is not None:
+            for box in result.boxes:
+                # Get bounding box coordinates
+                xyxy = box.xyxy[0].cpu().numpy()
+                conf = box.conf[0].cpu().numpy()
+                cls = box.cls[0].cpu().numpy()
+                
+                # Only process person class (class 0 in COCO dataset)
+                if cls == 0 and conf > 0.4:
+                    x1, y1, x2, y2 = map(int, xyxy)
+                    boxes.append([x1, y1, x2 - x1, y2 - y1])
+                    confidences.append(float(conf))
 
     # B2: DeepSORT tracking
     detections = []
