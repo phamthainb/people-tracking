@@ -1,3 +1,4 @@
+# Flow
 Camera stream
      ↓
 YOLOv8 (Detect person)
@@ -11,3 +12,7 @@ Line-crossing logic
 Counter (In/Out + Timestamp)
      ↓
 UI
+
+# Các model dùng
+- YOLOv8 -> dùng để detect người
+- DeepSort -> dùng để tracking người
