@@ -101,7 +101,7 @@
 * **4.4. Cấu hình phần cứng – phần mềm**
 
   * Phần cứng: GPU (nếu có), CPU tối thiểu, camera specs.
-  * Phần mềm: Python, OpenCV, Ultralytics YOLO, DeepSort, NumPy, Flask/Streamlit.
+  * Phần mềm: Python, OpenCV, Ultralytics YOLO, DeepSort, 
 
 
 ### **5. Cài đặt và triển khai (4–5 trang)**
@@ -110,6 +110,14 @@
 
   * Python 3.x, CUDA/cuDNN (nếu có).
   * Các thư viện cần cài: ultralytics supervision opencv-python deep-sort-realtime pyqt5
+  
+```shell
+PyQt5              5.15.11
+supervision        0.26.1
+ultralytics        8.3.213
+opencv-python      4.12.0.88
+deep-sort-realtime 1.3.2 
+```
 
 * **5.2. Mô tả từng module chính**
 
